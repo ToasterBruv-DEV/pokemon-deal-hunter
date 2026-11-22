@@ -34,10 +34,8 @@ from datetime import datetime, timezone
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(ROOT, "settings.json")
 DEALS_PATH = os.path.join(ROOT, "data", "deals.json")
-CACHE_PATH = os.path.join(ROOT, "data", "price_cache.json")
+PRICES_PATH = os.path.join(ROOT, "data", "prices.json")
 
-CACHE_TTL = 2 * 24 * 3600          # re-fetch a card's price after 2 days
-CACHE_PRUNE = 14 * 24 * 3600       # forget cards not touched in 2 weeks
 CATEGORY_CCG_SINGLES = "183454"
 SEARCH_ERRORS = []
 
@@ -422,42 +420,17 @@ def price_of(v):
 
 
 def lookup_cards(num, total, ctx):
-    key = f"{num}/{total}"
-    cache = ctx["cache"]
-    ent = cache.get(key)
-    now = time.time()
-    if ent and now - ent["t"] < CACHE_TTL:
-        ent["seen"] = now
-        return ent["cards"]
-    if ctx["budget"]["left"] <= 0:
-        ctx["budget_skips"] = ctx.get("budget_skips", 0) + 1
-        return ent["cards"] if ent else None
-    ctx["budget"]["left"] -= 1
-    q = f'number:"{num}" set.printedTotal:{total}'
-    url = "https://api.pokemontcg.io/v2/cards?" + urllib.parse.urlencode(
-        {"q": q, "select": "id,name,number,set,tcgplayer", "pageSize": "40"},
-        quote_via=urllib.parse.quote)
-    headers = {"X-Api-Key": ctx["tcg_key"]} if ctx.get("tcg_key") else {}
-    status, body = http_json(url, headers, timeout=45, retries=1)
-    time.sleep(0.2)
-    if status != 200 or not isinstance(body, dict):
-        ctx.setdefault("tcg_errors", []).append(f"HTTP {status}: {str(body)[:150]}")
-        return ent["cards"] if ent else None
-    ctx["tcg_ok"] = ctx.get("tcg_ok", 0) + 1
-    cards = []
-    for c in body.get("data", []) or []:
-        tp = c.get("tcgplayer") or {}
-        prices = {}
-        for k, v in (tp.get("prices") or {}).items():
-            if price_of(v):
-                prices[k] = {"market": v.get("market"), "mid": v.get("mid"), "low": v.get("low")}
-        cards.append({
-            "id": c.get("id"), "name": c.get("name", ""),
-            "set": (c.get("set") or {}).get("name", ""), "number": c.get("number"),
-            "url": tp.get("url"), "updated": tp.get("updatedAt"), "prices": prices,
-        })
-    cache[key] = {"t": now, "seen": now, "cards": cards}
-    return cards
+    """Cards in the saved TCGplayer price list that have this number and set size."""
+    try:
+        key = f"{int(num)}/{int(total)}"
+    except ValueError:
+        return []
+    out = []
+    for c in ctx["prices"].get(key, []):
+        c = dict(c)
+        c["updated"] = ctx.get("prices_updated")
+        out.append(c)
+    return out
 
 
 def norm_tokens(s):
@@ -542,8 +515,8 @@ def build_warnings(item, detail, price_pct, seller, ship_known, assumed, ambiguo
     if not ship_known:
         add("info", f"Shipping not listed, assumed ${assumed:.2f}")
     updated = parse_date(card.get("updated"))
-    if updated and (datetime.now(timezone.utc) - updated).days > 45:
-        add("info", "Market price data is more than 45 days old")
+    if updated and (datetime.now(timezone.utc) - updated).days > 3:
+        add("info", "Price list is more than 3 days old (the daily price update may have failed)")
     if ambiguous:
         add("info", "Several cards share this number, so the lowest price was used")
     elif not vclear:
@@ -597,8 +570,8 @@ def evaluate(item, detail, ctx):
             break
     if not hits:
         if not got_cards:
-            return skip(ctx, "price lookup failed or hit the per-run limit (see price API line below)", detail)
-        return skip(ctx, "card number found but no matching card with a price in the price database", detail)
+            return skip(ctx, "price list not available", detail)
+        return skip(ctx, "card number found but not in the TCGplayer price list (card may be too cheap, or a different set)", detail)
 
     picks = []
     for c in hits:
@@ -739,19 +712,24 @@ def main():
         except ValueError:
             pass
 
+    pdata = load_json(PRICES_PATH, {})
+    if not pdata.get("cards"):
+        sys.exit("There is no price list yet. In GitHub open Actions, click 'Update prices' on the left, "
+                 "click Run workflow, wait for the green check, then run the scan again.")
+    pcount = int(pdata.get("count") or sum(len(v) for v in pdata["cards"].values()))
+    log(f"Price list: {pcount} cards, downloaded {pdata.get('updated_at')} (TCGplayer data from tcgcsv.com)")
+
     cid = os.environ.get("EBAY_CLIENT_ID", "").strip()
     secret = os.environ.get("EBAY_CLIENT_SECRET", "").strip()
     if not cid or not secret:
         sys.exit("Missing EBAY_CLIENT_ID / EBAY_CLIENT_SECRET. Add them under Settings > Secrets in GitHub.")
     token = get_token(cid, secret)
 
-    cache = load_json(CACHE_PATH, {})
     prev_deals = {d["id"]: d for d in prev.get("deals", []) if d.get("id")}
     lim = S["limits"]
     ctx = {
-        "S": S, "cache": cache, "bad": build_bad_regex(S["extra_exclude_words"]),
-        "budget": {"left": int(lim["max_new_price_lookups"])},
-        "tcg_key": os.environ.get("POKEMONTCG_API_KEY", "").strip(),
+        "S": S, "bad": build_bad_regex(S["extra_exclude_words"]),
+        "prices": pdata["cards"], "prices_updated": pdata.get("updated_at"),
     }
     calls = {"search": 0, "item": 0}
     flag = float(S["flag_price_pct"])
@@ -868,11 +846,6 @@ def main():
     log("Why listings were skipped (first pass):")
     for k, v in sorted(ctx.get("drops", {}).items(), key=lambda x: -x[1]):
         log(f"  {v:>5}  {k}")
-    errs = ctx.get("tcg_errors", [])
-    log(f"Price API: {ctx.get('tcg_ok', 0)} lookups worked, {len(errs)} failed, "
-        f"{ctx.get('budget_skips', 0)} skipped by the per-run limit")
-    for e in errs[:3]:
-        log(f"  price API error: {e}")
 
     df = dict(S["default_filters"])
     df["max_price_pct"] = flag
@@ -888,7 +861,8 @@ def main():
         },
         "run": {"mode": "scheduled" if scheduled else "manual", "searches": len(queries),
                 "searches_total": len([q for q in S["queries"] if str(q).strip()]),
-                "skipped": ctx.get("drops", {}), "price_api_errors": len(errs)},
+                "skipped": ctx.get("drops", {}), "price_list_cards": pcount,
+                "price_list_updated": pdata.get("updated_at")},
         "stats": {
             "listings_seen": len(seen),
             "matched": len(fresh),
@@ -899,12 +873,7 @@ def main():
     }
     save_json(DEALS_PATH, out)
 
-    t = time.time()
-    for k in [k for k, v in cache.items() if t - v.get("seen", v.get("t", 0)) > CACHE_PRUNE]:
-        del cache[k]
-    save_json(CACHE_PATH, cache)
-    log(f"Saved {len(final)} deals. eBay calls this run: {calls['search'] + calls['item']}. "
-        f"New price lookups: {int(lim['max_new_price_lookups']) - ctx['budget']['left']}")
+    log(f"Saved {len(final)} deals. eBay calls this run: {calls['search'] + calls['item']}.")
 
 
 if __name__ == "__main__":
