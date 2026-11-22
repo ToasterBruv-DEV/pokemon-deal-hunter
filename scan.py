@@ -39,6 +39,7 @@ CACHE_PATH = os.path.join(ROOT, "data", "price_cache.json")
 CACHE_TTL = 2 * 24 * 3600          # re-fetch a card's price after 2 days
 CACHE_PRUNE = 14 * 24 * 3600       # forget cards not touched in 2 weeks
 CATEGORY_CCG_SINGLES = "183454"
+SEARCH_ERRORS = []
 
 DEFAULTS = {
     "queries": [
@@ -180,7 +181,8 @@ def search_ebay(token, query, limit, max_price):
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
     })
     if status != 200 or not isinstance(body, dict):
-        log(f"  ! eBay search failed for '{query}' (HTTP {status}): {str(body)[:160]}")
+        log(f"  ! eBay search failed for '{query}' (HTTP {status}): {str(body)[:300]}")
+        SEARCH_ERRORS.append(f"HTTP {status}: {str(body)[:300]}")
         return []
     return body.get("itemSummaries", []) or []
 
@@ -428,6 +430,7 @@ def lookup_cards(num, total, ctx):
         ent["seen"] = now
         return ent["cards"]
     if ctx["budget"]["left"] <= 0:
+        ctx["budget_skips"] = ctx.get("budget_skips", 0) + 1
         return ent["cards"] if ent else None
     ctx["budget"]["left"] -= 1
     q = f'number:"{num}" set.printedTotal:{total}'
@@ -438,7 +441,9 @@ def lookup_cards(num, total, ctx):
     status, body = http_json(url, headers, timeout=45, retries=1)
     time.sleep(0.2)
     if status != 200 or not isinstance(body, dict):
+        ctx.setdefault("tcg_errors", []).append(f"HTTP {status}: {str(body)[:150]}")
         return ent["cards"] if ent else None
+    ctx["tcg_ok"] = ctx.get("tcg_ok", 0) + 1
     cards = []
     for c in body.get("data", []) or []:
         tp = c.get("tcgplayer") or {}
@@ -552,36 +557,48 @@ def build_warnings(item, detail, price_pct, seller, ship_known, assumed, ambiguo
 # Evaluate one listing
 # ----------------------------------------------------------------------------
 
+def skip(ctx, reason, detail):
+    """Counts why a listing was dropped (first pass only) so the log can explain it."""
+    if detail is None:
+        d = ctx.setdefault("drops", {})
+        d[reason] = d.get(reason, 0) + 1
+    return None
+
+
 def evaluate(item, detail, ctx):
     """Turns one eBay listing into a scored deal dict, or None if it is not usable."""
     S = ctx["S"]
     title = item.get("title") or ""
     if ctx["bad"].search(title):
-        return None
+        return skip(ctx, "title has an excluded word (lot, graded, Japanese, proxy, ...)", detail)
     price_obj = item.get("price") or {}
     if price_obj.get("currency", "USD") != "USD":
-        return None
+        return skip(ctx, "not priced in USD", detail)
     try:
         price = float(price_obj.get("value"))
     except (TypeError, ValueError):
-        return None
+        return skip(ctx, "no usable price", detail)
     if detail and detail_reject(detail):
         return None
 
     nums = parse_number(title)
     if not nums:
-        return None
+        return skip(ctx, "no card number like 58/102 in the title", detail)
     hits, used = None, None
+    got_cards = False
     for n, t in nums[:2]:
         cards = lookup_cards(n, t, ctx)
         if cards is None:
             continue
+        got_cards = True
         h = match_cards(title, cards)
         if h:
             hits, used = h, (n, t)
             break
     if not hits:
-        return None
+        if not got_cards:
+            return skip(ctx, "price lookup failed or hit the per-run limit (see price API line below)", detail)
+        return skip(ctx, "card number found but no matching card with a price in the price database", detail)
 
     picks = []
     for c in hits:
@@ -591,12 +608,12 @@ def evaluate(item, detail, ctx):
             if m:
                 picks.append((m, c, k, clear))
     if not picks:
-        return None
+        return skip(ctx, "matched card has no market price", detail)
     picks.sort(key=lambda x: x[0])
     market, card, variant, vclear = picks[0]
     ambiguous = len(picks) > 1
     if not (S["min_market"] <= market <= S["max_market"]):
-        return None
+        return skip(ctx, f"card market value outside ${S['min_market']}-${S['max_market']}", detail)
 
     cd = read_condition(item, detail)
     cond = cd["key"]
@@ -606,7 +623,7 @@ def evaluate(item, detail, ctx):
     total = price + ship
     gap = expected - total
     if gap <= 0:
-        return None
+        return skip(ctx, "listed at or above its market value", detail)
     price_pct = total / expected * 100
 
     confidence, reasons = condition_confidence(cd)
@@ -751,6 +768,13 @@ def main():
                 seen.setdefault(it["itemId"], it)
         time.sleep(0.25)
     log(f"Search: {len(seen)} unique listings from {len(queries)} searches")
+    if not seen:
+        msg = "eBay returned 0 listings."
+        if SEARCH_ERRORS:
+            msg += " First error: " + SEARCH_ERRORS[0]
+        else:
+            msg += " No error was reported, so the searches matched nothing."
+        sys.exit(msg)
 
     # 2. first pass on search results
     now = now_iso()
@@ -841,6 +865,15 @@ def main():
     final.sort(key=lambda d: d["score"], reverse=True)
     final = final[: int(P["max_deals"])]
 
+    log("Why listings were skipped (first pass):")
+    for k, v in sorted(ctx.get("drops", {}).items(), key=lambda x: -x[1]):
+        log(f"  {v:>5}  {k}")
+    errs = ctx.get("tcg_errors", [])
+    log(f"Price API: {ctx.get('tcg_ok', 0)} lookups worked, {len(errs)} failed, "
+        f"{ctx.get('budget_skips', 0)} skipped by the per-run limit")
+    for e in errs[:3]:
+        log(f"  price API error: {e}")
+
     df = dict(S["default_filters"])
     df["max_price_pct"] = flag
     out = {
@@ -854,7 +887,8 @@ def main():
             "max_market": S["max_market"],
         },
         "run": {"mode": "scheduled" if scheduled else "manual", "searches": len(queries),
-                "searches_total": len([q for q in S["queries"] if str(q).strip()])},
+                "searches_total": len([q for q in S["queries"] if str(q).strip()]),
+                "skipped": ctx.get("drops", {}), "price_api_errors": len(errs)},
         "stats": {
             "listings_seen": len(seen),
             "matched": len(fresh),
