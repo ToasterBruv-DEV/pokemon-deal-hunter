@@ -22,7 +22,7 @@
     "snorlax pokemon card"
   ],
   "interval_minutes": 20,
-  "flag_price_pct": 70,
+  "flag_price_pct": 95,
   "min_market": 10,
   "max_market": 150,
   "assumed_shipping": 4,
