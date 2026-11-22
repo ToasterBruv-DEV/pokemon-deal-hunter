@@ -1,0 +1,53 @@
+name: Scan eBay
+
+# This wakes up every 5 minutes. The scanner itself checks the "run every" setting
+# (change it on the website) and quits right away if it is too soon.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      flag_price_pct:
+        description: "Optional, this run only: flag listings priced at or below this % of market value"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run scanner
+        env:
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          POKEMONTCG_API_KEY: ${{ secrets.POKEMONTCG_API_KEY }}
+          EVENT_NAME: ${{ github.event_name }}
+          FLAG_PRICE_PCT_OVERRIDE: ${{ github.event.inputs.flag_price_pct }}
+        run: python scan.py
+
+      - name: Save results
+        run: |
+          git config user.name "deal-bot"
+          git config user.email "deal-bot@users.noreply.github.com"
+          git add data/deals.json data/price_cache.json
+          if git diff --cached --quiet; then
+            echo "No changes to save"
+          else
+            git commit -m "Update deals"
+            git pull --rebase --autostash
+            git push
+          fi
