@@ -1,0 +1,1 @@
+{"updated_at":null,"query_cursor":0,"settings":{"flag_price_pct":70,"interval_minutes":20,"default_filters":{"min_gap":15,"min_confidence":50,"max_price_pct":70},"min_market":10,"max_market":150},"run":{"mode":"scheduled","searches":0,"searches_total":20},"stats":{"listings_seen":0,"matched":0,"deals_saved":0,"ebay_calls":0},"deals":[]}
