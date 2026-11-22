@@ -1,0 +1,30 @@
+{
+  "queries": [
+    "pikachu pokemon card",
+    "charizard pokemon card",
+    "mewtwo pokemon card",
+    "mew pokemon card",
+    "eevee pokemon card",
+    "umbreon pokemon card",
+    "espeon pokemon card",
+    "gengar pokemon card",
+    "lugia pokemon card",
+    "rayquaza pokemon card",
+    "blastoise pokemon card",
+    "venusaur pokemon card",
+    "dragonite pokemon card",
+    "gyarados pokemon card",
+    "lucario pokemon card",
+    "greninja pokemon card",
+    "gardevoir pokemon card",
+    "mimikyu pokemon card",
+    "arceus pokemon card",
+    "snorlax pokemon card"
+  ],
+  "interval_minutes": 20,
+  "flag_price_pct": 70,
+  "min_market": 10,
+  "max_market": 150,
+  "assumed_shipping": 4,
+  "extra_exclude_words": []
+}
