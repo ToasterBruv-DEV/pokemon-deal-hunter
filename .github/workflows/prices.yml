@@ -1,0 +1,46 @@
+name: Update prices
+
+# Downloads TCGplayer prices once a day (tcgcsv.com updates them once a day).
+# Run it by hand once before your first scan: Actions, Update prices, Run workflow.
+on:
+  schedule:
+    - cron: "30 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prices
+  cancel-in-progress: false
+
+jobs:
+  prices:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download prices
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: python prices.py
+
+      - name: Save results
+        run: |
+          git config user.name "deal-bot"
+          git config user.email "deal-bot@users.noreply.github.com"
+          git add data/prices.json
+          if git diff --cached --quiet; then
+            echo "No changes to save"
+          else
+            git commit -m "Update prices"
+            for i in 1 2 3 4; do
+              git pull --rebase --autostash && git push && break
+              sleep 5
+            done
+          fi
