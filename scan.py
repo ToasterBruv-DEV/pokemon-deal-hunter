@@ -72,7 +72,8 @@ DEFAULTS = {
     "min_market": 10,
     "max_market": 150,
     "min_listing_price": 3,           # ignore listings under this price (bulk cards crowd the results)
-    "min_price_pct": 12,              # under this % of market is almost always a wrong match
+    "min_price_pct": 20,              # under this % of market is almost always a wrong match
+    "skip_unclear_versions": False,   # True: skip listings when a special version (prize pack, stamped...) of the same number exists and the title does not say
     "pages_per_search": 2,            # manual scans read this many pages (200 listings each) per search
     "default_filters": {"min_gap": 15, "min_confidence": 50},
     "pool": {"min_gap": 5, "min_confidence": 10, "max_deals": 400},
@@ -503,7 +504,7 @@ def title_tags(title):
     return {k for k, rx in TITLE_TAG_RE.items() if rx.search(title)}
 
 
-def pick_candidates(title, cards):
+def pick_candidates(title, cards, extra=""):
     """Chooses which versions of a card a listing can be compared against.
 
     A special version (stamped, promo, cosmos holo, shadowless, ...) is only used when the title
@@ -512,7 +513,7 @@ def pick_candidates(title, cards):
     named = match_cards(title, cards)
     if not named:
         return [], "name"
-    mentioned = title_tags(title)
+    mentioned = title_tags(title + " " + extra)
     if mentioned:
         tagged = [c for c in named if c["tags"] and mentioned & set(c["tags"])]
         if not tagged:
@@ -525,6 +526,23 @@ def pick_candidates(title, cards):
     return [], "only_special"
 
 
+NONHOLO_RE = re.compile(r"non[\s-]?holo|no[\s-]holo|not[\s-]holo|\bnh\b", re.I)
+HOLO_KEYS = ("holofoil", "unlimitedHolofoil", "1stEditionHolofoil")
+PLAIN_KEYS = ("normal", "unlimitedNormal", "unlimited", "1stEditionNormal", "1stEdition")
+
+
+def finish_of(text):
+    """'nonholo', 'reverse', 'holo' or None, from the title (and eBay's item details)."""
+    t = text.lower()
+    if NONHOLO_RE.search(t):
+        return "nonholo"
+    if "reverse" in t:
+        return "reverse"
+    if re.search(r"\bholo|holographic|\bfoil\b", t):
+        return "holo"
+    return None
+
+
 def pick_variant(title, card):
     prices = card["prices"]
     keys = list(prices.keys())
@@ -532,17 +550,32 @@ def pick_variant(title, card):
         return None, False
     t = title.lower()
     want = []
-    if "reverse" in t:
+    fin = finish_of(title)
+    if fin == "nonholo":
+        want = [k for k in PLAIN_KEYS if k in prices]
+        if not want:
+            return None, False
+        for k in ("1stEditionNormal", "1stEdition"):
+            if k in want and not re.search(r"\b(?:1st|first)\s*ed", t):
+                want.remove(k)
+    elif fin == "reverse":
         want = ["reverseHolofoil"]
-    elif re.search(r"\b(?:1st|first)\s*ed", t):
-        want = ["1stEditionHolofoil", "1stEditionNormal", "1stEdition"]
-    elif "unlimited" in t:
-        want = ["unlimitedHolofoil", "unlimitedNormal", "unlimited"]
-    elif re.search(r"\bholo", t):
+    elif re.search(r"\b(?:1st|first)\s*ed", t) or "unlimited" in t:
+        first = bool(re.search(r"\b(?:1st|first)\s*ed", t))
+        group = [k for k in keys if k.startswith("1stEdition")] if first else [k for k in keys if k.startswith("unlimited")]
+        if fin == "holo":
+            group = [k for k in group if "Holofoil" in k] or group
+        if group:
+            if len(group) == 1 or fin == "holo":
+                return group[0], True
+            return min(group, key=lambda k: reference_price(prices[k])[0]), False
+    elif fin == "holo":
         want = ["holofoil", "unlimitedHolofoil"]
     for k in want:
         if k in prices:
             return k, True
+    if fin == "nonholo":
+        return None, False
     if len(keys) == 1:
         return keys[0], True
     pool = [k for k in keys if not k.startswith("1stEdition")] or keys
@@ -647,6 +680,9 @@ def evaluate(item, detail, ctx):
     if detail and detail_reject(detail):
         return None
 
+    a = aspect_map(detail)
+    extra = " ".join(a.get(k, "") for k in ("features", "finish", "rarity", "set", "card type", "type"))
+    ftext = title + " " + extra
     nums = parse_number(title)
     if not nums:
         return skip(ctx, "no card number like 58/102 in the title", detail)
@@ -656,7 +692,7 @@ def evaluate(item, detail, ctx):
         if not cards:
             continue
         any_cards = True
-        cands, w = pick_candidates(title, cards)
+        cands, w = pick_candidates(title, cards, extra)
         if cands:
             hits, used = cands, (n, t)
             break
@@ -670,9 +706,16 @@ def evaluate(item, detail, ctx):
             return skip(ctx, f"only special versions ({SPECIAL_EXAMPLES}) of this card exist and the title does not say which", detail)
         return skip(ctx, "card number found but the name in the title does not match that card", detail)
 
+    fin = finish_of(ftext)
+    if fin in ("holo", "nonholo"):
+        want_keys = HOLO_KEYS if fin == "holo" else PLAIN_KEYS
+        same = [c for c in hits if any(k in want_keys for k in c["prices"])]
+        if not same:
+            return skip(ctx, "listing says holo or non-holo but the matching card only exists as the other kind", detail)
+        hits = same
     picks = []
     for c in hits:
-        k, clear = pick_variant(title, c)
+        k, clear = pick_variant(ftext, c)
         if k:
             m, note = reference_price(c["prices"][k])
             if m:
@@ -717,6 +760,18 @@ def evaluate(item, detail, ctx):
     seller = {"name": seller_raw.get("username"), "pct": fb_pct, "score": fb_score}
     warnings = build_warnings(item, detail, price_pct, seller, ship_known, S["assumed_shipping"],
                               amb_text, vclear, card, bool(detail), ref_note)
+    if not title_tags(ftext):
+        specials = [c for c in match_cards(title, lookup_cards(used[0], used[1], ctx)) if c["tags"] and c["prices"]]
+        if specials:
+            if S.get("skip_unclear_versions"):
+                return skip(ctx, "a special version (prize pack, stamped, deck exclusive...) of this card exists and the title does not say which", detail)
+            sp = []
+            for c in specials:
+                vals = [reference_price(v)[0] for v in c["prices"].values()]
+                sp.append(f"{c['set']} ({', '.join(c['tags'])}) about ${max(vals):.0f}")
+            warnings.append({"level": "warn", "text": "Special versions of this exact card number exist: " + "; ".join(sp[:3]) + ". Check the photos show the regular one"})
+    if era in ("vintage", "classic") and fin is None and variant in HOLO_KEYS and not any(k in PLAIN_KEYS for k in card["prices"]):
+        warnings.append({"level": "warn", "text": "Title does not say holo or non-holo. This card is priced as the holo, so check the photos"})
 
     img = (item.get("image") or {}).get("imageUrl")
     if not img:
@@ -829,7 +884,7 @@ def main():
     if not pdata.get("cards"):
         sys.exit("There is no price list yet. In GitHub open Actions, click 'Update prices' on the left, "
                  "click Run workflow, wait for the green check, then run the scan again.")
-    if pdata.get("format") != 2:
+    if pdata.get("format") != 3:
         sys.exit("The price list is in an old format. In GitHub open Actions, click 'Update prices', "
                  "click Run workflow, wait for the green check, then run the scan again.")
     pcount = int(pdata.get("count") or sum(len(v) for v in pdata["cards"].values()))
