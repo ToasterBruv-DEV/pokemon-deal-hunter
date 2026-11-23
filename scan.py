@@ -2,22 +2,25 @@
 """
 Pokemon Deal Hunter - scanner.
 
-Runs on a schedule inside GitHub Actions (see .github/workflows/scan.yml).
-Python standard library only.
+Runs in GitHub Actions (see .github/workflows/scan.yml). Python standard library only.
+Needs data/prices.json, which prices.py builds once a day from TCGplayer data.
 
-What it does each run:
-  1. Searches eBay (official Browse API) for newly listed raw Pokemon singles.
-  2. Matches each listing to an exact card using the card number in the title
-     (like 58/102) plus the Pokemon name, then looks up the Near Mint market price
-     from the free Pokemon TCG API (TCGplayer prices).
-  3. Reads the condition from eBay's condition field, the title, or the description,
-     and adjusts the Near Mint price down for Lightly Played, Played, and so on.
+What it does each scan:
+  1. Searches eBay (official Browse API) for Buy It Now Pokemon singles.
+  2. Matches each listing to an exact card using the card number in the title (like 58/102),
+     the Pokemon name, and any special version the title mentions (stamped, promo, cosmos...).
+  3. Looks up the Near Mint market price and adjusts it for the condition in the listing.
+     Older sets lose more value when played, so the adjustment depends on the set's era.
   4. Scores each listing on three things:
        - price as a percent of market value (condition adjusted)
        - price gap in dollars
        - confidence, which is ONLY about how sure we are of the condition
      Scam and seller risk is shown as separate warnings and never changes confidence.
-  5. Saves everything worth looking at to data/deals.json for the website.
+  5. Saves the results as a numbered scan (data/scans/<n>.json) and updates the running list
+     of current deals (data/deals.json).
+
+Automatic (scheduled) scans only run when auto_scan is true in settings.json.
+Manual scans always run.
 """
 import base64
 import html
@@ -31,40 +34,63 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from prices import TAGS  # the list of special card versions, shared with the price builder
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_PATH = os.path.join(ROOT, "settings.json")
 DEALS_PATH = os.path.join(ROOT, "data", "deals.json")
 PRICES_PATH = os.path.join(ROOT, "data", "prices.json")
-
+SCANS_PATH = os.path.join(ROOT, "data", "scans.json")
+SCAN_DIR = os.path.join(ROOT, "data", "scans")
+KEEP_SCAN_FILES = 20          # full results kept for this many recent scans
+KEEP_SCAN_SUMMARIES = 200     # one-line history kept for this many scans
 CATEGORY_CCG_SINGLES = "183454"
 SEARCH_ERRORS = []
 
+NAMES = [
+    "charizard", "pikachu", "mewtwo", "mew", "eevee", "umbreon", "espeon", "sylveon", "vaporeon",
+    "jolteon", "flareon", "leafeon", "glaceon", "gengar", "lugia", "ho-oh", "rayquaza", "blastoise",
+    "venusaur", "dragonite", "gyarados", "lucario", "greninja", "gardevoir", "mimikyu", "arceus",
+    "snorlax", "suicune", "entei", "raikou", "celebi", "giratina", "dialga", "palkia", "garchomp",
+    "tyranitar", "alakazam", "machamp", "ninetales", "arcanine", "scizor", "charmander", "squirtle",
+    "bulbasaur", "jigglypuff", "togepi", "lapras", "zoroark", "miraidon", "koraidon",
+]
+TERMS = [
+    "base set holo", "jungle holo", "fossil holo", "team rocket holo", "gym heroes", "gym challenge",
+    "neo genesis holo", "neo discovery", "neo revelation", "neo destiny", "legendary collection",
+    "expedition holo", "aquapolis", "skyridge", "ex holo", "full art", "radiant", "vstar", "vmax",
+    "alternate art", "illustration rare", "special illustration rare", "secret rare", "shiny",
+    "reverse holo", "holo rare",
+]
+DEFAULT_QUERIES = [f"{n} pokemon card" for n in NAMES] + [f"{t} pokemon card" for t in TERMS]
+
 DEFAULTS = {
-    "queries": [
-        "pikachu pokemon card", "charizard pokemon card", "mewtwo pokemon card",
-        "mew pokemon card", "eevee pokemon card", "umbreon pokemon card",
-        "espeon pokemon card", "gengar pokemon card", "lugia pokemon card",
-        "rayquaza pokemon card", "blastoise pokemon card", "venusaur pokemon card",
-        "dragonite pokemon card", "gyarados pokemon card", "lucario pokemon card",
-        "greninja pokemon card", "gardevoir pokemon card", "mimikyu pokemon card",
-        "arceus pokemon card", "snorlax pokemon card",
-    ],
-    "interval_minutes": 20,           # how often scheduled scans run (5, 10, 15, 30, 60)
+    "queries": DEFAULT_QUERIES,
+    "auto_scan": False,               # automatic scans are OFF unless you switch them on
+    "interval_minutes": 20,           # how often automatic scans run (5, 10, 15, 30, 60)
     "flag_price_pct": 70,             # keep listings priced at or below this % of market value
     "min_market": 10,
     "max_market": 150,
+    "min_listing_price": 3,           # ignore listings under this price (bulk cards crowd the results)
+    "min_price_pct": 12,              # under this % of market is almost always a wrong match
+    "pages_per_search": 2,            # manual scans read this many pages (200 listings each) per search
     "default_filters": {"min_gap": 15, "min_confidence": 50},
-    "pool": {"min_gap": 5, "min_confidence": 10, "max_deals": 300},
+    "pool": {"min_gap": 5, "min_confidence": 10, "max_deals": 400},
     "limits": {
         "results_per_query": 200,
-        "max_item_lookups": 15,
-        "max_verify": 8,
-        "max_new_price_lookups": 60,
+        "max_item_lookups": 25,
+        "max_verify": 10,
         "keep_hours": 36,
         "daily_call_budget": 4500,    # eBay's free tier is about 5,000 calls a day
     },
     "assumed_shipping": 4.0,
-    "condition_multipliers": {"nm": 1.0, "lp": 0.85, "mp": 0.70, "hp": 0.50, "dmg": 0.35, "unknown": 0.80},
+    # How much of the Near Mint price a copy is worth. Older cards lose more when played.
+    # These are rules of thumb, not data. Tune them if they feel off.
+    "era_multipliers": {
+        "vintage": {"nm": 1.0, "lp": 0.72, "mp": 0.52, "hp": 0.35, "dmg": 0.25, "unknown": 0.65},
+        "classic": {"nm": 1.0, "lp": 0.80, "mp": 0.62, "hp": 0.45, "dmg": 0.30, "unknown": 0.72},
+        "modern":  {"nm": 1.0, "lp": 0.85, "mp": 0.70, "hp": 0.50, "dmg": 0.35, "unknown": 0.80},
+    },
     "extra_exclude_words": [],
 }
 
@@ -163,13 +189,14 @@ def get_token(client_id, client_secret):
     return body["access_token"]
 
 
-def search_ebay(token, query, limit, max_price):
+def search_ebay(token, query, limit, max_price, min_price=1, offset=0):
     params = {
         "q": query,
         "category_ids": CATEGORY_CCG_SINGLES,
-        "filter": f"buyingOptions:{{FIXED_PRICE}},priceCurrency:USD,price:[1..{int(max_price)}]",
+        "filter": f"buyingOptions:{{FIXED_PRICE}},priceCurrency:USD,price:[{int(min_price)}..{int(max_price)}]",
         "sort": "newlyListed",
         "limit": str(min(int(limit), 200)),
+        "offset": str(int(offset)),
         "fieldgroups": "EXTENDED",
     }
     url = "https://api.ebay.com/buy/browse/v1/item_summary/search?" + urllib.parse.urlencode(
@@ -384,7 +411,7 @@ def condition_confidence(cd):
     agree = []
     if key == "unknown":
         base = 25
-        lines.append("No condition stated, so a Lightly Played price was assumed")
+        lines.append("No condition stated, so a reduced price was assumed")
     else:
         agree = [s for s, (k, _) in srcs.items() if k == key]
         if len(agree) >= 3:
@@ -412,25 +439,50 @@ def condition_confidence(cd):
 
 
 # ----------------------------------------------------------------------------
-# Card matching and market price (Pokemon TCG API)
+# Card matching and market price (saved TCGplayer price list)
 # ----------------------------------------------------------------------------
 
-def price_of(v):
-    return (v or {}).get("market") or (v or {}).get("mid") or 0
+TITLE_TAG_RE = {k: re.compile(v, re.I) for k, v in TAGS.items()}
+
+
+def expand(rec):
+    """Turns a compact price-list record into the shape the scanner uses."""
+    pid = rec.get("id")
+    return {
+        "id": pid, "name": rec.get("name", ""), "set": rec.get("set", ""), "number": rec.get("n"),
+        "year": rec.get("y"), "tags": rec.get("t") or [],
+        "url": f"https://www.tcgplayer.com/product/{pid}" if pid else None,
+        "prices": {k: {"market": v[0], "mid": v[1]} for k, v in (rec.get("p") or {}).items()
+                   if v and (v[0] or v[1])},
+    }
 
 
 def lookup_cards(num, total, ctx):
-    """Cards in the saved TCGplayer price list that have this number and set size."""
+    """All versions of the card with this number and set size from the saved price list."""
     try:
         key = f"{int(num)}/{int(total)}"
     except ValueError:
         return []
     out = []
-    for c in ctx["prices"].get(key, []):
-        c = dict(c)
+    for rec in ctx["prices"].get(key, []):
+        c = expand(rec)
         c["updated"] = ctx.get("prices_updated")
         out.append(c)
     return out
+
+
+def reference_price(v):
+    """The Near Mint price to use for one variant, and where it came from.
+
+    TCGplayer's market price is recent sales. On thin markets one big sale can inflate it, so if
+    it is far above the mid (median listing) price, the mid price is used instead.
+    """
+    market, mid = (v or {}).get("market"), (v or {}).get("mid")
+    if market and mid and market > 1.5 * mid:
+        return mid, "TCGplayer's market price looked inflated, so the mid price was used"
+    if market:
+        return market, None
+    return (mid or 0), ("no market price, so the mid price was used" if mid else None)
 
 
 def norm_tokens(s):
@@ -445,6 +497,32 @@ def match_cards(title, cards):
         if nt and all(t in tt for t in nt) and c["prices"]:
             hits.append(c)
     return hits
+
+
+def title_tags(title):
+    return {k for k, rx in TITLE_TAG_RE.items() if rx.search(title)}
+
+
+def pick_candidates(title, cards):
+    """Chooses which versions of a card a listing can be compared against.
+
+    A special version (stamped, promo, cosmos holo, shadowless, ...) is only used when the title
+    says so. Otherwise only the regular versions are used. Returns (cards, reason_if_none).
+    """
+    named = match_cards(title, cards)
+    if not named:
+        return [], "name"
+    mentioned = title_tags(title)
+    if mentioned:
+        tagged = [c for c in named if c["tags"] and mentioned & set(c["tags"])]
+        if not tagged:
+            return [], "special"
+        best = max(len(mentioned & set(c["tags"])) for c in tagged)
+        return [c for c in tagged if len(mentioned & set(c["tags"])) == best], None
+    plain = [c for c in named if not c["tags"]]
+    if plain:
+        return plain, None
+    return [], "only_special"
 
 
 def pick_variant(title, card):
@@ -468,7 +546,17 @@ def pick_variant(title, card):
     if len(keys) == 1:
         return keys[0], True
     pool = [k for k in keys if not k.startswith("1stEdition")] or keys
-    return min(pool, key=lambda k: price_of(prices[k])), False
+    return min(pool, key=lambda k: reference_price(prices[k])[0]), False
+
+
+def era_of(year):
+    if year is None:
+        return "modern"
+    if year <= 2003:
+        return "vintage"
+    if year <= 2015:
+        return "classic"
+    return "modern"
 
 
 # ----------------------------------------------------------------------------
@@ -482,7 +570,7 @@ def parse_date(s):
         return None
 
 
-def build_warnings(item, detail, price_pct, seller, ship_known, assumed, ambiguous, vclear, card, detailed):
+def build_warnings(item, detail, price_pct, seller, ship_known, assumed, amb_text, vclear, card, detailed, ref_note):
     w = []
 
     def add(level, text):
@@ -517,10 +605,12 @@ def build_warnings(item, detail, price_pct, seller, ship_known, assumed, ambiguo
     updated = parse_date(card.get("updated"))
     if updated and (datetime.now(timezone.utc) - updated).days > 3:
         add("info", "Price list is more than 3 days old (the daily price update may have failed)")
-    if ambiguous:
-        add("info", "Several cards share this number, so the lowest price was used")
+    if amb_text:
+        add("info", amb_text)
     elif not vclear:
-        add("info", "Card has several print versions, so it was compared to the cheapest")
+        add("info", "Card has several print versions (holo, reverse holo...), so it was compared to the cheapest")
+    if ref_note:
+        add("info", ref_note[0].upper() + ref_note[1:])
     if not detailed:
         add("info", "Full listing not read yet")
     return w
@@ -536,6 +626,9 @@ def skip(ctx, reason, detail):
         d = ctx.setdefault("drops", {})
         d[reason] = d.get(reason, 0) + 1
     return None
+
+
+SPECIAL_EXAMPLES = "stamped, promo, cosmos, prerelease, shadowless..."
 
 
 def evaluate(item, detail, ctx):
@@ -557,40 +650,49 @@ def evaluate(item, detail, ctx):
     nums = parse_number(title)
     if not nums:
         return skip(ctx, "no card number like 58/102 in the title", detail)
-    hits, used = None, None
-    got_cards = False
+    hits, used, why, any_cards = None, None, None, False
     for n, t in nums[:2]:
         cards = lookup_cards(n, t, ctx)
-        if cards is None:
+        if not cards:
             continue
-        got_cards = True
-        h = match_cards(title, cards)
-        if h:
-            hits, used = h, (n, t)
+        any_cards = True
+        cands, w = pick_candidates(title, cards)
+        if cands:
+            hits, used = cands, (n, t)
             break
+        why = why or w
     if not hits:
-        if not got_cards:
-            return skip(ctx, "price list not available", detail)
-        return skip(ctx, "card number found but not in the TCGplayer price list (card may be too cheap, or a different set)", detail)
+        if not any_cards:
+            return skip(ctx, "card number found but not in the TCGplayer price list (card may be too cheap, or a different set)", detail)
+        if why == "special":
+            return skip(ctx, f"title mentions a special version ({SPECIAL_EXAMPLES}) that is not in the price list", detail)
+        if why == "only_special":
+            return skip(ctx, f"only special versions ({SPECIAL_EXAMPLES}) of this card exist and the title does not say which", detail)
+        return skip(ctx, "card number found but the name in the title does not match that card", detail)
 
     picks = []
     for c in hits:
         k, clear = pick_variant(title, c)
         if k:
-            m = price_of(c["prices"][k])
+            m, note = reference_price(c["prices"][k])
             if m:
-                picks.append((m, c, k, clear))
+                picks.append((m, c, k, clear, note))
     if not picks:
         return skip(ctx, "matched card has no market price", detail)
     picks.sort(key=lambda x: x[0])
-    market, card, variant, vclear = picks[0]
-    ambiguous = len(picks) > 1
+    market, card, variant, vclear, ref_note = picks[0]
+    amb_text = None
+    if len(picks) > 1 and picks[-1][0] > picks[0][0] * 1.15:
+        amb_text = (f"Several cards share this number (market ${picks[0][0]:.2f} to ${picks[-1][0]:.2f}), "
+                    "so the lowest price was used")
     if not (S["min_market"] <= market <= S["max_market"]):
         return skip(ctx, f"card market value outside ${S['min_market']}-${S['max_market']}", detail)
 
     cd = read_condition(item, detail)
     cond = cd["key"]
-    mult = S["condition_multipliers"].get(cond, S["condition_multipliers"]["unknown"])
+    era = era_of(card.get("year"))
+    mults = S["era_multipliers"][era]
+    mult = mults.get(cond, mults["unknown"])
     expected = round(market * mult, 2)
     ship, ship_known = ship_cost(detail or item, S["assumed_shipping"])
     total = price + ship
@@ -598,6 +700,8 @@ def evaluate(item, detail, ctx):
     if gap <= 0:
         return skip(ctx, "listed at or above its market value", detail)
     price_pct = total / expected * 100
+    if price_pct < float(S["min_price_pct"]):
+        return skip(ctx, f"priced under {S['min_price_pct']:g}% of market value (almost always a wrong match)", detail)
 
     confidence, reasons = condition_confidence(cd)
 
@@ -612,7 +716,7 @@ def evaluate(item, detail, ctx):
         fb_score = None
     seller = {"name": seller_raw.get("username"), "pct": fb_pct, "score": fb_score}
     warnings = build_warnings(item, detail, price_pct, seller, ship_known, S["assumed_shipping"],
-                              ambiguous, vclear, card, bool(detail))
+                              amb_text, vclear, card, bool(detail), ref_note)
 
     img = (item.get("image") or {}).get("imageUrl")
     if not img:
@@ -630,9 +734,13 @@ def evaluate(item, detail, ctx):
         "total": round(total, 2),
         "card": card["name"],
         "set": card["set"],
+        "year": card.get("year"),
+        "era": era,
+        "tags": card.get("tags") or [],
         "number": f"{used[0]}/{used[1]}",
         "variant": variant,
         "market": round(market, 2),
+        "multiplier": mult,
         "condition": cond,
         "condition_label": COND_LABEL[cond],
         "condition_source": cd["source"],
@@ -657,16 +765,17 @@ def evaluate(item, detail, ctx):
 # ----------------------------------------------------------------------------
 
 def plan_run(S, scheduled, cursor):
-    """Decides how many searches and detail lookups this run can afford.
+    """Decides what this scan covers.
 
-    Manual runs use everything. Scheduled runs stay inside the daily eBay call budget,
-    rotating through the searches when the run rate is fast.
+    Manual scans read every search for the configured number of pages. Automatic scans stay inside
+    the daily eBay call budget, rotating through the searches when the run rate is fast.
+    Returns (queries, pages, detail lookups, re-checks, next cursor).
     """
     lim = S["limits"]
-    queries = [q for q in S["queries"] if str(q).strip()][:40]
+    queries = [q for q in S["queries"] if str(q).strip()][:100]
     full_lookups, full_verify = int(lim["max_item_lookups"]), int(lim["max_verify"])
     if not scheduled or not queries:
-        return queries, full_lookups, full_verify, cursor
+        return queries, max(1, int(S["pages_per_search"])), full_lookups, full_verify, cursor
     interval = max(5.0, float(S["interval_minutes"]))
     runs_per_day = 1440.0 / interval
     per_run = int(float(lim["daily_call_budget"]) / runs_per_day)
@@ -677,11 +786,11 @@ def plan_run(S, scheduled, cursor):
     n = len(queries)
     start = cursor % n
     chosen = [queries[(start + i) % n] for i in range(nq)]
-    return chosen, lookups, verify, (start + nq) % n
+    return chosen, 1, lookups, verify, (start + nq) % n
 
 
 def should_skip(S, prev):
-    """Scheduled runs wake up every 5 minutes and quit if it is too soon."""
+    """Automatic runs wake up every 5 minutes and quit if it is too soon."""
     if os.environ.get("EVENT_NAME", "") != "schedule":
         return False
     last = parse_iso(prev.get("updated_at"))
@@ -700,6 +809,10 @@ def main():
     prev = load_json(DEALS_PATH, {"deals": []})
     scheduled = os.environ.get("EVENT_NAME", "") == "schedule"
 
+    if scheduled and not S.get("auto_scan"):
+        log("Automatic scanning is OFF, so this scheduled wake-up does nothing. "
+            "Turn it on in the website, or press Scan now to scan by hand.")
+        return
     if should_skip(S, prev):
         log(f"Skipping: last scan was recent and the run rate is {S['interval_minutes']} minutes.")
         return
@@ -708,13 +821,16 @@ def main():
     if override:
         try:
             S["flag_price_pct"] = max(5.0, min(100.0, float(override)))
-            log(f"Using {S['flag_price_pct']:g}% of market for this run only.")
+            log(f"Using {S['flag_price_pct']:g}% of market for this scan only.")
         except ValueError:
-            pass
+            override = ""
 
     pdata = load_json(PRICES_PATH, {})
     if not pdata.get("cards"):
         sys.exit("There is no price list yet. In GitHub open Actions, click 'Update prices' on the left, "
+                 "click Run workflow, wait for the green check, then run the scan again.")
+    if pdata.get("format") != 2:
+        sys.exit("The price list is in an old format. In GitHub open Actions, click 'Update prices', "
                  "click Run workflow, wait for the green check, then run the scan again.")
     pcount = int(pdata.get("count") or sum(len(v) for v in pdata["cards"].values()))
     log(f"Price list: {pcount} cards, downloaded {pdata.get('updated_at')} (TCGplayer data from tcgcsv.com)")
@@ -725,6 +841,11 @@ def main():
         sys.exit("Missing EBAY_CLIENT_ID / EBAY_CLIENT_SECRET. Add them under Settings > Secrets in GitHub.")
     token = get_token(cid, secret)
 
+    index = load_json(SCANS_PATH, {"next_id": 1, "scans": []})
+    scan_id = int(index.get("next_id", 1))
+    started = now_iso()
+    log(f"=== Scan #{scan_id} ({'automatic' if scheduled else 'manual'}) ===")
+
     prev_deals = {d["id"]: d for d in prev.get("deals", []) if d.get("id")}
     lim = S["limits"]
     ctx = {
@@ -733,19 +854,23 @@ def main():
     }
     calls = {"search": 0, "item": 0}
     flag = float(S["flag_price_pct"])
+    per_page = int(lim["results_per_query"])
 
-    queries, max_lookups, max_verify, cursor = plan_run(S, scheduled, int(prev.get("query_cursor", 0) or 0))
+    queries, pages, max_lookups, max_verify, cursor = plan_run(S, scheduled, int(prev.get("query_cursor", 0) or 0))
 
     # 1. search
     seen = {}
     for q in queries:
-        items = search_ebay(token, q, lim["results_per_query"], S["max_market"])
-        calls["search"] += 1
-        for it in items:
-            if it.get("itemId"):
-                seen.setdefault(it["itemId"], it)
-        time.sleep(0.25)
-    log(f"Search: {len(seen)} unique listings from {len(queries)} searches")
+        for page in range(pages):
+            items = search_ebay(token, q, per_page, S["max_market"], S["min_listing_price"], page * per_page)
+            calls["search"] += 1
+            for it in items:
+                if it.get("itemId"):
+                    seen.setdefault(it["itemId"], it)
+            time.sleep(0.25)
+            if len(items) < per_page:
+                break
+    log(f"Search: {len(seen)} unique listings from {len(queries)} searches x {pages} page(s)")
     if not seen:
         msg = "eBay returned 0 listings."
         if SEARCH_ERRORS:
@@ -837,31 +962,76 @@ def main():
                 continue
         pool[d["id"]] = d
 
-    # 5. keep what is worth a look and save
+    # 5. keep what is worth a look
     final = [d for d in pool.values()
              if d["price_pct"] <= flag and d["gap"] >= P["min_gap"] and d["confidence"] >= P["min_confidence"]]
     final.sort(key=lambda d: d["score"], reverse=True)
     final = final[: int(P["max_deals"])]
+    for d in final:
+        old = prev_deals.get(d["id"])
+        d["first_scan"] = old.get("first_scan") if old else scan_id
 
     log("Why listings were skipped (first pass):")
     for k, v in sorted(ctx.get("drops", {}).items(), key=lambda x: -x[1]):
         log(f"  {v:>5}  {k}")
 
+    # 6. save this scan, then the running list
+    scan_deals = []
+    for d in final:
+        if d["id"] in seen:
+            dd = dict(d)
+            dd["is_new"] = d["first_scan"] == scan_id
+            scan_deals.append(dd)
+    scan_deals.sort(key=lambda d: d["score"], reverse=True)
+    new_count = sum(1 for d in scan_deals if d["is_new"])
+    finished = now_iso()
+    summary = {
+        "id": scan_id,
+        "code": f"#{scan_id}",
+        "trigger": "auto" if scheduled else "manual",
+        "started": started,
+        "finished": finished,
+        "flag_price_pct": flag,
+        "one_time_percent": bool(override),
+        "searches": len(queries),
+        "searches_total": len([q for q in S["queries"] if str(q).strip()]),
+        "pages": pages,
+        "listings_seen": len(seen),
+        "matched": len(fresh),
+        "deals": len(scan_deals),
+        "new": new_count,
+        "carried": len(final) - len(scan_deals),
+        "ebay_calls": calls["search"] + calls["item"],
+        "skipped": ctx.get("drops", {}),
+    }
+    save_json(os.path.join(SCAN_DIR, f"{scan_id}.json"), {"summary": summary, "deals": scan_deals})
+    index["scans"] = ([summary] + [s for s in index.get("scans", []) if s.get("id") != scan_id])[:KEEP_SCAN_SUMMARIES]
+    index["next_id"] = scan_id + 1
+    save_json(SCANS_PATH, index)
+    try:
+        for fn in os.listdir(SCAN_DIR):
+            m = re.fullmatch(r"(\d+)\.json", fn)
+            if m and int(m.group(1)) <= scan_id - KEEP_SCAN_FILES:
+                os.remove(os.path.join(SCAN_DIR, fn))
+    except OSError:
+        pass
+
     df = dict(S["default_filters"])
     df["max_price_pct"] = flag
     out = {
-        "updated_at": now_iso(),
+        "updated_at": finished,
+        "last_scan_id": scan_id,
         "query_cursor": cursor,
         "settings": {
             "flag_price_pct": flag,
+            "auto_scan": bool(S.get("auto_scan")),
             "interval_minutes": S["interval_minutes"],
             "default_filters": df,
             "min_market": S["min_market"],
             "max_market": S["max_market"],
         },
-        "run": {"mode": "scheduled" if scheduled else "manual", "searches": len(queries),
-                "searches_total": len([q for q in S["queries"] if str(q).strip()]),
-                "skipped": ctx.get("drops", {}), "price_list_cards": pcount,
+        "run": {"mode": summary["trigger"], "searches": len(queries), "searches_total": summary["searches_total"],
+                "pages": pages, "skipped": ctx.get("drops", {}), "price_list_cards": pcount,
                 "price_list_updated": pdata.get("updated_at")},
         "stats": {
             "listings_seen": len(seen),
@@ -872,8 +1042,8 @@ def main():
         "deals": final,
     }
     save_json(DEALS_PATH, out)
-
-    log(f"Saved {len(final)} deals. eBay calls this run: {calls['search'] + calls['item']}.")
+    log(f"Scan #{scan_id} saved: {len(scan_deals)} deals found in this scan ({new_count} new), "
+        f"{len(final)} in the current list. eBay calls: {calls['search'] + calls['item']}.")
 
 
 if __name__ == "__main__":
