@@ -64,6 +64,8 @@ TERMS = [
 ]
 DEFAULT_QUERIES = [f"{n} pokemon card" for n in NAMES] + [f"{t} pokemon card" for t in TERMS]
 
+ENGINE = 3   # bumped whenever matching rules change; deals saved by an older version are thrown away
+
 DEFAULTS = {
     "queries": DEFAULT_QUERIES,
     "auto_scan": False,               # automatic scans are OFF unless you switch them on
@@ -901,7 +903,10 @@ def main():
     started = now_iso()
     log(f"=== Scan #{scan_id} ({'automatic' if scheduled else 'manual'}) ===")
 
-    prev_deals = {d["id"]: d for d in prev.get("deals", []) if d.get("id")}
+    if prev.get("engine") != ENGINE:
+        log(f"Old deal list came from an older scanner version ({prev.get('engine')}), so it was thrown away.")
+        prev = {"deals": []}
+    prev_deals = {d["id"]: d for d in prev.get("deals", []) if d.get("id") and d.get("price_pct", 0) >= float(S["min_price_pct"])}
     lim = S["limits"]
     ctx = {
         "S": S, "bad": build_bad_regex(S["extra_exclude_words"]),
@@ -1041,6 +1046,7 @@ def main():
     new_count = sum(1 for d in scan_deals if d["is_new"])
     finished = now_iso()
     summary = {
+        "engine": ENGINE,
         "id": scan_id,
         "code": f"#{scan_id}",
         "trigger": "auto" if scheduled else "manual",
@@ -1074,6 +1080,7 @@ def main():
     df = dict(S["default_filters"])
     df["max_price_pct"] = flag
     out = {
+        "engine": ENGINE,
         "updated_at": finished,
         "last_scan_id": scan_id,
         "query_cursor": cursor,
