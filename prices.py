@@ -34,7 +34,7 @@ BASE = "https://tcgcsv.com"
 CATEGORY = 3  # Pokemon (English)
 UA = "PokemonDealHunter/1.0 (+https://github.com/toasterbruv-dev/pokemon-deal-hunter)"
 PAUSE = 0.25
-FORMAT = 2
+FORMAT = 3
 MIN_CARDS = 500            # refuse to overwrite a good price list with a suspiciously small one
 MAX_FAILED_FRACTION = 0.2  # ... or one where more than this share of sets failed to download
 
@@ -62,6 +62,8 @@ TAGS = {
     "holiday": r"holiday",
     "jumbo": r"jumbo|oversize",
     "error": r"\berror\b|misprint",
+    "deckbox": r"deck ?box|exclusive|theme deck|trainer kit|battle academy|blister|\btin\b|collection box|\bdeck\b",
+    "retail": r"toys ?r ?us|costco|walmart|gamestop|best buy|target exclusive",
 }
 TAG_RE = {k: re.compile(v, re.I) for k, v in TAGS.items()}
 
@@ -108,6 +110,22 @@ def clean_name(name):
     n = re.sub(r"\s*\([^)]*\)", "", name or "")                       # (Special Illustration Rare)
     n = re.sub(r"\s*-\s*[A-Za-z]*\d+\s*/\s*[A-Za-z]*\d+.*$", "", n)    # - 58/102
     return n.strip()
+
+
+SAFE_PAREN = re.compile(r"rare|holo|foil|reverse|secret|ultra|hyper|illustration|full art|alternate|alt art|shiny|radiant|common|"
+                        r"uncommon|1st|first|unlimited|edition|vmax|vstar|\bv\b|\bex\b|\bgx\b|break|prime|legend|lv\.?\s*x|"
+                        r"character|amazing|^\s*\d+\s*$", re.I)
+
+
+def odd_paren(name):
+    """True when the product name has a bracketed note we do not recognise, like (Poke Ball Pattern).
+
+    Such a card is treated as a special version, so it is never used to price a plain listing."""
+    for m in re.finditer(r"\(([^)]*)\)", name or ""):
+        txt = m.group(1)
+        if not SAFE_PAREN.search(txt) and not special_tags(txt):
+            return True
+    return False
 
 
 def special_tags(*texts):
@@ -166,6 +184,8 @@ def build_group(products, prices, group):
         rec = {"id": prod.get("productId"), "name": clean_name(prod.get("name")), "set": gname,
                "n": str(num[0]), "y": year, "p": pr}
         tags = special_tags(prod.get("name"), gname)
+        if odd_paren(prod.get("name")):
+            tags = sorted(set(tags) | {"variant"})
         if tags:
             rec["t"] = tags
         out.setdefault(f"{num[0]}/{num[1]}", []).append(rec)
