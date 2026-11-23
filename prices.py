@@ -8,8 +8,14 @@ lookup file, data/prices.json, that scan.py reads.
 
 Runs once a day in GitHub Actions (.github/workflows/prices.yml). Python standard library only.
 
-Be polite to tcgcsv.com: one full pull a day, a custom User-Agent, a short pause
-between requests (about 450 requests in total, far below their limit).
+Important: the list keeps EVERY version of a card that shares a number (regular, stamped,
+promo, cosmos holo, shadowless, ...) and labels the special ones with tags. The scanner
+only compares a listing to a special version when the listing title says so. Older versions
+of this script dropped cheap cards, which left only the expensive stamped promo to compare
+against and made bulk cards look 97% off.
+
+Be polite to tcgcsv.com: one full pull a day, a custom User-Agent, a short pause between
+requests (about 450 requests in total, far below their limit).
 """
 import json
 import os
@@ -28,10 +34,36 @@ BASE = "https://tcgcsv.com"
 CATEGORY = 3  # Pokemon (English)
 UA = "PokemonDealHunter/1.0 (+https://github.com/toasterbruv-dev/pokemon-deal-hunter)"
 PAUSE = 0.25
+FORMAT = 2
 MIN_CARDS = 500            # refuse to overwrite a good price list with a suspiciously small one
 MAX_FAILED_FRACTION = 0.2  # ... or one where more than this share of sets failed to download
 
 NUMBER_RE = re.compile(r"^\s*0*(\d{1,3})\s*/\s*0*(\d{1,3})\s*$")
+
+# Special versions of a card. A card carrying one of these tags is only used for a listing
+# whose title mentions it. The same patterns are used by scan.py to read listing titles.
+TAGS = {
+    "cosmos": r"cosmos",
+    "stamped": r"stamp",
+    "prerelease": r"pre-?release",
+    "staff": r"\bstaff\b",
+    "league": r"\bleague\b",
+    "champs": r"championship|\bworlds?\b|\bregionals?\b|\bnationals?\b|\btop (?:4|8|16|32|64)\b",
+    "prizepack": r"prize pack",
+    "promo": r"\bpromos?\b",
+    "pokecenter": r"pok[eé]mon cent(?:er|re)",
+    "crackedice": r"cracked ice",
+    "shadowless": r"shadowless",
+    "celebrations": r"classic collection|celebrations",
+    "e3": r"\be3\b",
+    "mcdonalds": r"mcdonald",
+    "buildbattle": r"build (?:&|and) battle",
+    "trickortrade": r"trick or trade",
+    "holiday": r"holiday",
+    "jumbo": r"jumbo|oversize",
+    "error": r"\berror\b|misprint",
+}
+TAG_RE = {k: re.compile(v, re.I) for k, v in TAGS.items()}
 
 
 def log(*a):
@@ -78,6 +110,11 @@ def clean_name(name):
     return n.strip()
 
 
+def special_tags(*texts):
+    t = " ".join(x or "" for x in texts)
+    return sorted(k for k, rx in TAG_RE.items() if rx.search(t))
+
+
 def card_number(product):
     for e in product.get("extendedData") or []:
         if e.get("name") == "Number":
@@ -85,6 +122,11 @@ def card_number(product):
             if m and int(m.group(1)) > 0:
                 return int(m.group(1)), int(m.group(2))
     return None
+
+
+def group_year(group):
+    m = re.match(r"(\d{4})", str(group.get("publishedOn") or ""))
+    return int(m.group(1)) if m else None
 
 
 def money(v):
@@ -102,35 +144,37 @@ def load_json(path, default):
         return default
 
 
-def build_group(products, prices, lo_market, hi_market, group_name):
-    """Returns {'58/102': [card, ...]} for one set."""
+def build_group(products, prices, group):
+    """Returns {'58/102': [record, ...]} for one set. Keeps every card, cheap or not.
+
+    Record: {"id": productId, "name", "set", "n": number, "y": year, "t": [tags], "p": {variant: [market, mid]}}
+    """
+    gname = group.get("name", "")
+    year = group_year(group)
     by_product = {}
     for p in prices:
-        v = p.get("marketPrice")
-        mid = money(p.get("midPrice"))
-        market = money(v) if v is not None else None
+        market, mid = money(p.get("marketPrice")), money(p.get("midPrice"))
         if not (market or mid):
             continue
-        by_product.setdefault(p.get("productId"), {})[variant_key(p.get("subTypeName"))] = {
-            "market": market, "mid": mid, "low": money(p.get("lowPrice"))}
+        by_product.setdefault(p.get("productId"), {})[variant_key(p.get("subTypeName"))] = [market, mid]
     out = {}
     for prod in products:
         num = card_number(prod)
         pr = by_product.get(prod.get("productId"))
         if not num or not pr:
             continue
-        vals = [(v["market"] or v["mid"]) for v in pr.values()]
-        if max(vals) < lo_market or min(vals) > hi_market:
-            continue
-        key = f"{num[0]}/{num[1]}"
-        out.setdefault(key, []).append({
-            "name": clean_name(prod.get("name")),
-            "set": group_name,
-            "number": str(num[0]),
-            "url": prod.get("url"),
-            "prices": pr,
-        })
+        rec = {"id": prod.get("productId"), "name": clean_name(prod.get("name")), "set": gname,
+               "n": str(num[0]), "y": year, "p": pr}
+        tags = special_tags(prod.get("name"), gname)
+        if tags:
+            rec["t"] = tags
+        out.setdefault(f"{num[0]}/{num[1]}", []).append(rec)
     return out
+
+
+def rec_range(rec):
+    vals = [(m or d) for m, d in rec["p"].values() if (m or d)]
+    return (min(vals), max(vals)) if vals else (0, 0)
 
 
 def main():
@@ -141,7 +185,8 @@ def main():
     src_ts = fetch(BASE + "/last-updated.txt", "text")
     log(f"tcgcsv last updated: {src_ts}")
     existing = load_json(OUT_PATH, {})
-    if os.environ.get("EVENT_NAME") == "schedule" and existing.get("source_updated") == src_ts and existing.get("cards"):
+    if (os.environ.get("EVENT_NAME") == "schedule" and existing.get("source_updated") == src_ts
+            and existing.get("cards") and existing.get("format") == FORMAT):
         log("Prices are already up to date. Nothing to do.")
         return
 
@@ -163,21 +208,27 @@ def main():
             failed.append(f"{gname}: {e}")
             log(f"  ! skipped set '{gname}': {e}")
             continue
-        for k, lst in build_group(products, prices, lo, hi, gname).items():
+        for k, lst in build_group(products, prices, g).items():
             cards.setdefault(k, []).extend(lst)
         if i % 25 == 0:
             log(f"  {i}/{len(groups)} sets done, {len(cards)} card numbers so far")
 
-    total = sum(len(v) for v in cards.values())
-    log(f"Built {total} cards under {len(cards)} card numbers. {len(failed)} sets failed.")
+    # Keep a card number only if at least one version of it is in the price range we care about,
+    # but when we keep it, keep ALL versions so the scanner can tell them apart.
+    kept = {}
+    for k, lst in cards.items():
+        if any(rec_range(r)[1] >= lo and rec_range(r)[0] <= hi for r in lst):
+            kept[k] = lst
+    total = sum(len(v) for v in kept.values())
+    log(f"Built {total} cards under {len(kept)} card numbers (of {len(cards)}). {len(failed)} sets failed.")
     if len(failed) > max(5, len(groups) * MAX_FAILED_FRACTION) or total < MIN_CARDS:
         sys.exit("Too many sets failed or too few cards came back, so the old price list was kept.")
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     tmp = OUT_PATH + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"updated_at": now_iso(), "source_updated": src_ts, "category": CATEGORY,
-                   "sets": len(groups), "count": total, "cards": cards},
+        json.dump({"format": FORMAT, "updated_at": now_iso(), "source_updated": src_ts, "category": CATEGORY,
+                   "sets": len(groups), "count": total, "cards": kept},
                   f, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, OUT_PATH)
     log(f"Saved {OUT_PATH} ({os.path.getsize(OUT_PATH) // 1024} KB)")
