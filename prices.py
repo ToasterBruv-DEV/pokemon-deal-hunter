@@ -34,7 +34,7 @@ BASE = "https://tcgcsv.com"
 CATEGORY = 3  # Pokemon (English)
 UA = "PokemonDealHunter/1.0 (+https://github.com/toasterbruv-dev/pokemon-deal-hunter)"
 PAUSE = 0.25
-FORMAT = 3
+FORMAT = 4
 MIN_CARDS = 500            # refuse to overwrite a good price list with a suspiciously small one
 MAX_FAILED_FRACTION = 0.2  # ... or one where more than this share of sets failed to download
 
@@ -54,7 +54,7 @@ TAGS = {
     "pokecenter": r"pok[eé]mon cent(?:er|re)",
     "crackedice": r"cracked ice",
     "shadowless": r"shadowless",
-    "celebrations": r"classic collection|celebrations",
+    "celebrations": r"classic collection|celebrations|\b(?:25|30)th\b|anniversary",
     "e3": r"\be3\b",
     "mcdonalds": r"mcdonald",
     "buildbattle": r"build (?:&|and) battle",
