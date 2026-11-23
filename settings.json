@@ -5,7 +5,8 @@
   "min_market": 10,
   "max_market": 150,
   "min_listing_price": 3,
-  "pages_per_search": 2,
+  "card_searches": 150,
+  "skip_unclear_versions": true,
   "assumed_shipping": 4,
   "extra_exclude_words": [],
   "queries": [
@@ -84,7 +85,7 @@
     "secret rare pokemon card",
     "shiny pokemon card",
     "reverse holo pokemon card",
-    "holo rare pokemon card",
-    "wobbufet pokemon card"
-  ]
+    "holo rare pokemon card"
+  ],
+  "pages_per_search": 5
 }
