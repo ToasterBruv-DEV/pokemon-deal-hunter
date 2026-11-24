@@ -96,6 +96,11 @@ DEFAULTS = {
         "daily_call_budget": 4500,    # eBay's free tier is about 5,000 calls a day
     },
     "assumed_shipping": 6.0,
+    "auction_auto": False,            # Auction Tracker: scan by itself (off unless you switch it on)
+    "auction_interval_minutes": 30,   # how often the automatic auction scan runs
+    "auction_window_minutes": 30,     # collect auctions that end within this many minutes
+    "auction_pages": 3,               # most pages per search in a manual auction scan
+    "auction_lookups": 80,            # full listings read per manual auction scan
     "us_only": True,                  # only listings located in the USA
     "nm_single_source_factor": 0.90,   # a Near Mint claim backed by only one source is priced at this share of Near Mint (grows with your condition reports)
     # How much of the Near Mint price a copy is worth. Older cards lose more when played.
@@ -119,10 +124,12 @@ def now_iso():
 
 
 def parse_iso(s):
+    """Reads 2026-11-24T22:30:00Z and eBay's 2026-11-24T22:30:00.000Z."""
     try:
-        return datetime.strptime(str(s), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        t = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except ValueError:
         return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
 
 
 def log(*a):
