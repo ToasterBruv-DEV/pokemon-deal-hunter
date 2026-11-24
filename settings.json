@@ -7,7 +7,7 @@
   "min_listing_price": 3,
   "card_searches": 150,
   "skip_unclear_versions": true,
-  "assumed_shipping": 7,
+  "assumed_shipping": 6,
   "extra_exclude_words": [],
   "queries": [
     "charizard pokemon card",
@@ -85,8 +85,12 @@
     "secret rare pokemon card",
     "shiny pokemon card",
     "reverse holo pokemon card",
-    "holo rare pokemon card",
-    "pokemon card"
+    "holo rare pokemon card"
   ],
-  "pages_per_search": 6
+  "pages_per_search": 5,
+  "auction_auto": false,
+  "auction_interval_minutes": 30,
+  "auction_window_minutes": 30,
+  "auction_pages": 3,
+  "auction_lookups": 80
 }
