@@ -70,7 +70,7 @@ TERMS = [
 ]
 DEFAULT_QUERIES = [f"{n} pokemon card" for n in NAMES] + [f"{t} pokemon card" for t in TERMS]
 
-ENGINE = 5   # bumped whenever matching rules change; deals saved by an older version are thrown away
+ENGINE = 6   # bumped whenever matching rules change; deals saved by an older version are thrown away
 
 DEFAULTS = {
     "queries": DEFAULT_QUERIES,
@@ -86,7 +86,8 @@ DEFAULTS = {
     "card_searches": 150,             # manual scans also search this many exact cards (name + number), oldest-searched first
     "max_search_calls": 700,          # hard cap on eBay search calls in one manual scan
     "default_filters": {"min_gap": 15, "min_confidence": 50},
-    "pool": {"min_gap": 5, "min_confidence": 10, "max_deals": 400},
+    "pool": {"min_gap": 5, "min_confidence": 10, "max_deals": 600},
+    "pool_pct": 90,                   # listings up to this % of value are saved so you can browse close calls; the flag % decides what counts as a deal
     "limits": {
         "results_per_query": 200,
         "max_item_lookups": 60,
@@ -100,10 +101,10 @@ DEFAULTS = {
     # How much of the Near Mint price a copy is worth. Older cards lose more when played.
     # These are rules of thumb, not data. Tune them if they feel off.
     "condition_value_scaling": 0.12,   # pricier cards lose a bigger share when played
-    "era_multipliers": {
-        "vintage": {"nm": 1.0, "lp": 0.62, "mp": 0.45, "hp": 0.30, "dmg": 0.20, "unknown": 0.58},
-        "classic": {"nm": 1.0, "lp": 0.75, "mp": 0.58, "hp": 0.40, "dmg": 0.27, "unknown": 0.68},
-        "modern":  {"nm": 1.0, "lp": 0.85, "mp": 0.70, "hp": 0.50, "dmg": 0.35, "unknown": 0.80},
+    "era_multipliers": {   # share of the Near Mint price. Strict on purpose: print quality (whitening, edge wear) is poor before 2020
+        "vintage": {"nm": 1.0, "lp": 0.58, "mp": 0.40, "hp": 0.26, "dmg": 0.17, "unknown": 0.52},
+        "classic": {"nm": 1.0, "lp": 0.62, "mp": 0.43, "hp": 0.28, "dmg": 0.18, "unknown": 0.55},
+        "modern":  {"nm": 1.0, "lp": 0.78, "mp": 0.60, "hp": 0.42, "dmg": 0.28, "unknown": 0.70},
     },
     "extra_exclude_words": [],
 }
@@ -615,15 +616,17 @@ ERA_HINTS = [
                            r"delta|legend maker|holon|crystal guardians|power keepers)|diamond|pearl|platinum|heartgold|soulsilver|"
                            r"call of legends|black ?& ?white|\bbw\b|plasma|boundaries|dragons exalted|dark explorers|next destinies|"
                            r"noble victories|emerging powers|legendary treasures|\bxy|primal clash|roaring skies|ancient origins|"
-                           r"furious fists|flashfire|phantom forces|breakthrough|breakpoint|fates collide|steam siege|evolutions|"
+                           r"furious fists|flashfire|phantom forces|breakthrough|breakpoint|fates collide|steam siege|\bxy\b.{0,12}evolutions|^evolutions$|"
                            r"generations|double crisis|majestic dawn|great encounters|secret wonders|mysterious treasures|"
                            r"legends awakened|stormfront|rising rivals|supreme victors|arceus|triumphant|undaunted|unleashed|"
-                           r"dragon vault|rumble|hgss", re.I)),
+                           r"dragon vault|rumble|hgss|sun ?& ?moon|\bsm\b|guardians rising|burning shadows|shining legends|crimson invasion|"
+                           r"ultra prism|forbidden light|celestial storm|lost thunder|team up|unbroken bonds|unified minds|cosmic eclipse|"
+                           r"hidden fates|detective pikachu|dragon majesty|shiny vault|radiant collection", re.I)),
 ]
 
 
 def era_of(year, set_name=""):
-    """vintage (WOTC, 1999-2003), classic (2004-2016) or modern (2017 on). The set name wins over the year."""
+    """vintage (WOTC, 1999-2003), classic (2004-2019, EX through Sun & Moon) or modern (2020 on: Sword & Shield, Scarlet & Violet, Mega Evolution). The set name wins over the year."""
     for era, rx in ERA_HINTS:
         if set_name and rx.search(set_name):
             return era
@@ -631,7 +634,7 @@ def era_of(year, set_name=""):
         return "classic"          # unknown age: the middle setting
     if year <= 2003:
         return "vintage"
-    if year <= 2016:
+    if year <= 2019:
         return "classic"
     return "modern"
 
@@ -1225,7 +1228,7 @@ def main():
 
     # 5. keep what is worth a look
     final = [d for d in pool.values()
-             if d["price_pct"] <= flag and d["gap"] >= P["min_gap"] and d["confidence"] >= P["min_confidence"]
+             if d["price_pct"] <= max(flag, float(S.get("pool_pct", 90))) and d["gap"] >= P["min_gap"] and d["confidence"] >= P["min_confidence"]
              and not (d.get("needs_detail") and not d.get("detailed"))]
     final.sort(key=lambda d: d["score"], reverse=True)
     final = final[: int(P["max_deals"])]
@@ -1246,7 +1249,8 @@ def main():
             dd["new_listing"] = d["id"] in new_ids
             scan_deals.append(dd)
     scan_deals.sort(key=lambda d: d["score"], reverse=True)
-    new_count = sum(1 for d in scan_deals if d["is_new"])
+    flagged = [d for d in scan_deals if d["price_pct"] <= flag]
+    new_count = sum(1 for d in flagged if d["is_new"])
     finished = now_iso()
     summary = {
         "engine": ENGINE,
@@ -1262,7 +1266,9 @@ def main():
         "pages": pages,
         "listings_seen": len(seen),
         "matched": len(fresh),
-        "deals": len(scan_deals),
+        "deals": len(flagged),
+        "close_calls": len(scan_deals) - len(flagged),
+        "pool_pct": max(flag, float(S.get("pool_pct", 90))),
         "new": new_count,
         "carried": len(final) - len(scan_deals),
         "ebay_calls": calls["search"] + calls["item"],
@@ -1306,6 +1312,7 @@ def main():
         "query_cursor": cursor,
         "settings": {
             "flag_price_pct": flag,
+            "pool_pct": max(flag, float(S.get("pool_pct", 90))),
             "auto_scan": bool(S.get("auto_scan")),
             "interval_minutes": S["interval_minutes"],
             "default_filters": df,
