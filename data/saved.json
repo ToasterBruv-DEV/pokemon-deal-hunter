@@ -179,6 +179,61 @@
    "is_new": false,
    "new_listing": true,
    "saved_at": "2026-11-24T00:16:30.898Z"
+  },
+  "v1|407262151568|0": {
+   "id": "v1|407262151568|0",
+   "title": "Kangaskhan - Holo - 6/112 FireRed & LeafGreen - Pokémon TCG - 2004",
+   "url": "https://www.ebay.com/itm/407262151568?_skw=Kangaskhan+6%2F112+pokemon&hash=item5ed2b74390:g:iwIAAeSw9XRqwBBa",
+   "image": "https://i.ebayimg.com/images/g/iwIAAeSw9XRqwBBa/s-l225.jpg",
+   "price": 59.99,
+   "shipping": 0,
+   "ship_known": true,
+   "total": 59.99,
+   "card": "Kangaskhan",
+   "set": "EX FireRed & LeafGreen",
+   "year": 2004,
+   "era": "classic",
+   "tags": [],
+   "number": "6/112",
+   "variant": "holofoil",
+   "market": 108.26,
+   "multiplier": 1,
+   "mult_note": null,
+   "pid": 86421,
+   "listed": "2026-10-02T20:12:11.000Z",
+   "needs_detail": false,
+   "condition": "nm",
+   "condition_label": "Near Mint",
+   "condition_source": "desc",
+   "expected": 108.26,
+   "price_pct": 55.4,
+   "gap": 48.27,
+   "confidence": 60,
+   "score": 28.96,
+   "reasons": [
+    "Description says \"near mint\" (Near Mint)",
+    "Only one source states the condition"
+   ],
+   "warnings": [
+    {
+     "level": "info",
+     "text": "Full listing not read yet"
+    }
+   ],
+   "tcg_url": "https://www.tcgplayer.com/product/86421",
+   "seller": {
+    "name": "castlerock-tcg",
+    "pct": 99.9,
+    "score": 6677
+   },
+   "first_seen": "2026-11-24T00:11:49Z",
+   "last_seen": "2026-11-24T00:11:49Z",
+   "detailed": false,
+   "checked_at": null,
+   "first_scan": 5,
+   "is_new": true,
+   "new_listing": true,
+   "saved_at": "2026-11-24T00:19:46.709Z"
   }
  }
 }
