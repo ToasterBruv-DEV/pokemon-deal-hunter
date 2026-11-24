@@ -1,0 +1,64 @@
+{
+ "saved": {
+  "v1|168876884669|0": {
+   "id": "v1|168876884669|0",
+   "title": "Absol 21/132 Secret Wonders Reverse Holo NM Pokemon Card",
+   "url": "https://www.ebay.com/itm/168876884669?_skw=secret+rare+pokemon+card&hash=item2751d8c2bd:g:GzsAAeSws5prAMqq",
+   "image": "https://i.ebayimg.com/images/g/GzsAAeSws5prAMqq/s-l225.jpg",
+   "price": 25,
+   "shipping": 4,
+   "ship_known": false,
+   "total": 29,
+   "card": "Absol",
+   "set": "Secret Wonders",
+   "year": 2007,
+   "era": "classic",
+   "tags": [],
+   "number": "21/132",
+   "variant": "reverseHolofoil",
+   "market": 57.34,
+   "multiplier": 1,
+   "mult_note": null,
+   "pid": 83453,
+   "listed": "2026-11-20T22:33:24.000Z",
+   "needs_detail": false,
+   "condition": "nm",
+   "condition_label": "Near Mint",
+   "condition_source": "title",
+   "expected": 57.34,
+   "price_pct": 50.6,
+   "gap": 28.34,
+   "confidence": 90,
+   "score": 25.51,
+   "reasons": [
+    "Title says \"nm\" (Near Mint)",
+    "Description says \"nm\" (Near Mint)",
+    "Two sources agree"
+   ],
+   "warnings": [
+    {
+     "level": "info",
+     "text": "Shipping not listed, assumed $4.00"
+    },
+    {
+     "level": "info",
+     "text": "Full listing not read yet"
+    }
+   ],
+   "tcg_url": "https://www.tcgplayer.com/product/83453",
+   "seller": {
+    "name": "victory.rhode",
+    "pct": 100,
+    "score": 534
+   },
+   "first_seen": "2026-11-23T23:50:44Z",
+   "last_seen": "2026-11-23T23:50:44Z",
+   "detailed": false,
+   "checked_at": null,
+   "first_scan": 4,
+   "is_new": true,
+   "new_listing": true,
+   "saved_at": "2026-11-24T00:02:20.099Z"
+  }
+ }
+}
