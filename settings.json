@@ -7,7 +7,7 @@
   "min_listing_price": 3,
   "card_searches": 150,
   "skip_unclear_versions": true,
-  "assumed_shipping": 4,
+  "assumed_shipping": 6,
   "extra_exclude_words": [],
   "queries": [
     "charizard pokemon card",
