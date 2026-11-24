@@ -70,7 +70,7 @@ TERMS = [
 ]
 DEFAULT_QUERIES = [f"{n} pokemon card" for n in NAMES] + [f"{t} pokemon card" for t in TERMS]
 
-ENGINE = 4   # bumped whenever matching rules change; deals saved by an older version are thrown away
+ENGINE = 5   # bumped whenever matching rules change; deals saved by an older version are thrown away
 
 DEFAULTS = {
     "queries": DEFAULT_QUERIES,
@@ -94,7 +94,9 @@ DEFAULTS = {
         "keep_hours": 36,
         "daily_call_budget": 4500,    # eBay's free tier is about 5,000 calls a day
     },
-    "assumed_shipping": 4.0,
+    "assumed_shipping": 6.0,
+    "us_only": True,                  # only listings located in the USA
+    "nm_single_source_factor": 0.90,   # a Near Mint claim backed by only one source is priced at this share of Near Mint (grows with your condition reports)
     # How much of the Near Mint price a copy is worth. Older cards lose more when played.
     # These are rules of thumb, not data. Tune them if they feel off.
     "condition_value_scaling": 0.12,   # pricier cards lose a bigger share when played
@@ -205,7 +207,7 @@ def search_ebay(token, query, limit, max_price, min_price=1, offset=0):
     params = {
         "q": query,
         "category_ids": CATEGORY_CCG_SINGLES,
-        "filter": f"buyingOptions:{{FIXED_PRICE}},priceCurrency:USD,price:[{int(min_price)}..{int(max_price)}]",
+        "filter": f"buyingOptions:{{FIXED_PRICE}},priceCurrency:USD,itemLocationCountry:US,price:[{int(min_price)}..{int(max_price)}]",
         "sort": "newlyListed",
         "limit": str(min(int(limit), 200)),
         "offset": str(int(offset)),
@@ -258,7 +260,7 @@ def ship_cost(item, assumed):
 
 BAD_BASE = (
     r"psa|bgs|beckett|cgc|sgc|graded|slab|slabbed|proxy|custom|reprint|replica|fake|orica|"
-    r"metal|gold plated|oversized|jumbo|sticker|coin|booster|bundle|lot|lots|collection|bulk|"
+    r"extended art(?:work)?s?|extended|ext\.? art|fan art|altered|handmade|acrylic|metal|gold plated|oversized|jumbo|sticker|coin|booster|bundle|lot|lots|collection|bulk|"
     r"playset|set of|mystery|random|you pick|pick your|choose your|choose|digital|code|tin|"
     r"binder|sleeves|deck|japanese|japan|jpn|korean|chinese|german|french|spanish|italian|"
     r"portuguese|thai|indonesian|dutch"
@@ -322,11 +324,14 @@ COND_RE = {
         r"\b(?:heavily played|heavy play|heavy wear|poor|well played|worn)\b"
         r"|(?<!\d )(?<!\d)\bhp\b(?!\s*\d)"),
     "mp": re.compile(
-        r"\b(?:moderately played|moderate play|moderate wear|mp|play wear)\b"
+        r"\b(?:moderately played|moderate play|moderate wear|mp|play wear|indents?|indentation|rounded corners?|"
+        r"visible wear|noticeable wear|obvious wear|very good|vg|light bend|slight bend)\b"
         r"|(?<!lightly )(?<!slightly )(?<!heavily )(?<!moderately )(?<!well )\bplayed\b"),
     "lp": re.compile(
         r"\b(?:lightly played|slightly played|light play|light wear|slight wear|minor wear|"
-        r"minor whitening|light whitening|slight whitening|excellent|lp)\b"),
+        r"minor whitening|light whitening|slight whitening|excellent|lp|whitening|edge ?wear|corner wear|"
+        r"silvering|scratch(?:es|ed|ing)?|scuff(?:s|ed|ing)?|dings?|nicks?|imperfections?|blemish(?:es)?|"
+        r"surface wear|print lines?|fingerprints?|shelf wear|minor flaws?|small flaws?)\b"),
     "nm": re.compile(
         r"\b(?:near mint|near-mint|nm|nm-mt|nm/mt|nm/m|mint|unplayed|pack fresh|pulled and sleeved)\b"),
 }
@@ -343,11 +348,19 @@ VAGUE_RE = re.compile(
     r"|\b(?:good|great|nice|fine|decent|clean)\s+(?:condition|shape)\b|\bas[- ]is\b", re.I)
 
 
+# Store-wide boilerplate and hedges are not about this card.
+DISCLAIM_RE = re.compile(
+    r"\ball (?:of )?(?:my |our |the )?(?:cards|items|listings)\b[^.;\n]*"
+    r"|\b(?:may|might|could|can|will)\s+(?:have|show|contain|include|be)\b[^.;\n]*"
+    r"|\bif any\b[^.;\n]*|\bunless\b[^.;\n]*|\b(?:please\s+)?(?:check|see|view|review|look at|refer to)\s+(?:the\s+|all\s+)?(?:photos?|pictures?|pics?|images?)[^.;\n]*", re.I)
+
+
 def classify_full(text):
     """Returns (worst condition key, matched phrase) found in the text, or (None, None)."""
     if not text:
         return None, None
     t = text.lower().replace("’", "'")
+    t = DISCLAIM_RE.sub(" ", t)
     t = NEG_RE.sub(" ", t)
     for key in COND_ORDER:
         m = COND_RE[key].search(t)
@@ -383,7 +396,8 @@ def detail_reject(detail):
 def read_condition(item, detail):
     """Reads the condition from the eBay field, the title and the description separately."""
     src = detail or item
-    field_parts = [str(item.get("condition") or ""), str((detail or {}).get("condition") or "")]
+    field_parts = [str(item.get("condition") or ""), str((detail or {}).get("condition") or ""),
+                   str(item.get("conditionDescription") or ""), str((detail or {}).get("conditionDescription") or "")]
     for d in (src.get("conditionDescriptors") or []):
         for v in d.get("values", []) or []:
             field_parts.append(str(v.get("content") or ""))
@@ -393,7 +407,8 @@ def read_condition(item, detail):
     texts = (
         ("field", " ".join(field_parts)),
         ("title", item.get("title") or ""),
-        ("desc", clean_desc((item.get("shortDescription") or "") + " " + ((detail or {}).get("description") or ""))),
+        ("desc", clean_desc((item.get("shortDescription") or "") + " " + ((detail or {}).get("description") or "")
+                            + " " + " ".join(v for n_, v in aspect_map(detail).items() if "condition" not in n_ and n_ in ("features", "notes", "additional information")))),
     )
     sources = {}
     for name, text in texts:
@@ -433,7 +448,7 @@ def condition_confidence(cd):
             base = 90
             lines.append("Two sources agree")
         else:
-            base = {"field": 80, "title": 75, "desc": 60}[agree[0]]
+            base = {"field": 70, "title": 65, "desc": 55}[agree[0]] if key == "nm" else {"field": 80, "title": 75, "desc": 60}[agree[0]]
             lines.append("Only one source states the condition")
         if len(agree) < len(srcs):
             base -= 25
@@ -761,6 +776,9 @@ def evaluate(item, detail, ctx):
 
     if ctx.get("removed") and item.get("itemId") in ctx["removed"]:
         return skip(ctx, "you removed this listing", detail)
+    loc = (detail or {}).get("itemLocation") or item.get("itemLocation") or {}
+    if S.get("us_only", True) and loc.get("country") and loc.get("country") != "US":
+        return skip(ctx, "item is not located in the USA", detail)
     a = aspect_map(detail)
     extra = " ".join(a.get(k, "") for k in ("features", "finish", "rarity", "set", "card type", "type"))
     if detail and detail.get("description"):
@@ -821,8 +839,17 @@ def evaluate(item, detail, ctx):
 
     cd = read_condition(item, detail)
     cond = cd["key"]
+    seller_name = ((item.get("seller") or {}).get("username")) or ((detail or {}).get("seller") or {}).get("username")
+    if seller_name and seller_name in ctx.get("bad_sellers", ()):
+        return skip(ctx, "you marked this seller as fake or sketchy", detail)
+    cond_trained = None
+    if seller_name and seller_name in ctx.get("cond_sellers", ()) and cond == "nm":
+        cond, cond_trained = "lp", "You reported this seller's condition as worse than listed, so Near Mint was treated as Lightly Played"
     era = era_of(card.get("year"), card.get("set"))
     mult, mult_note = cond_multiplier(S, ctx, era, cond, market)
+    if cond == "nm" and len([k for k, _ in cd["sources"].values() if k == "nm"]) < 2 and cond_trained is None:
+        f_ = float(S.get("nm_single_source_factor", 0.9)) - min(0.10, 0.02 * ctx.get("nm_wrong", 0))
+        mult, mult_note = round(f_, 3), "Near Mint claimed by only one source, so priced a little under full Near Mint"
     expected = round(market * mult, 2)
     if detail is None and cd["source"] in ("field", "title") and vclear and "samples" in ctx:
         ratio = price / market
@@ -838,6 +865,9 @@ def evaluate(item, detail, ctx):
         return skip(ctx, f"priced under {S['min_price_pct']:g}% of market value (almost always a wrong match)", detail)
 
     confidence, reasons = condition_confidence(cd)
+    if cond_trained:
+        reasons.append(cond_trained)
+        confidence = min(confidence, 50)
 
     seller_raw = item.get("seller") or {}
     try:
@@ -895,6 +925,7 @@ def evaluate(item, detail, ctx):
         "pid": pid,
         "listed": item.get("itemCreationDate"),
         "needs_detail": needs_detail,
+        "cond_sources": {k_: list(v_) for k_, v_ in cd["sources"].items()},
         "condition": cond,
         "condition_label": COND_LABEL[cond],
         "condition_source": cd["source"],
@@ -1028,10 +1059,15 @@ def main():
         prev = {"deals": []}
     fb = load_json(FEEDBACK_PATH, {"removed": {}})
     removed = fb.get("removed") or {}
-    distrust = {r.get("pid") for r in removed.values() if r.get("reason") == "version" and r.get("pid")}
+    distrust = {r.get("pid") for r in removed.values() if r.get("reason") in ("version", "wrong_card") and r.get("pid")}
+    bad_sellers = {r.get("seller") for r in removed.values() if r.get("reason") == "scam" and r.get("seller")}
+    cond_sellers = {r.get("seller") for r in removed.values() if r.get("reason") == "cond_worse" and r.get("seller")}
+    nm_wrong = sum(1 for r in removed.values() if r.get("reason") == "cond_worse" and r.get("claimed") == "nm")
     badprice = {r.get("pid") for r in removed.values() if r.get("reason") == "price" and r.get("pid")}
     if removed:
-        log(f"Feedback: {len(removed)} removed listings, {len(distrust)} cards flagged for version mix-ups, {len(badprice)} for wrong price.")
+        log(f"Feedback: {len(removed)} removed listings, {len(distrust)} cards flagged for version mix-ups, {len(badprice)} for wrong price, "
+            f"{len(bad_sellers)} sellers blocked, {len(cond_sellers)} sellers whose condition is read one step lower, "
+            f"{nm_wrong} Near Mint claims reported wrong.")
     prev_deals = {d["id"]: d for d in prev.get("deals", [])
                   if d.get("id") and d["id"] not in removed and d.get("price_pct", 0) >= float(S["min_price_pct"])}
     lim = S["limits"]
@@ -1042,6 +1078,7 @@ def main():
         "S": S, "bad": build_bad_regex(S["extra_exclude_words"]),
         "prices": pdata["cards"], "prices_updated": pdata.get("updated_at"),
         "removed": set(removed), "distrust": distrust, "badprice": badprice,
+        "bad_sellers": bad_sellers, "cond_sellers": cond_sellers, "nm_wrong": nm_wrong,
         "learned": build_learned(stats), "samples": {},
     }
     calls = {"search": 0, "item": 0}
