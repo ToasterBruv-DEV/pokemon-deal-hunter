@@ -7,7 +7,7 @@
   "min_listing_price": 3,
   "card_searches": 150,
   "skip_unclear_versions": true,
-  "assumed_shipping": 6,
+  "assumed_shipping": 7,
   "extra_exclude_words": [],
   "queries": [
     "charizard pokemon card",
@@ -87,5 +87,5 @@
     "reverse holo pokemon card",
     "holo rare pokemon card"
   ],
-  "pages_per_search": 5
+  "pages_per_search": 6
 }
