@@ -383,6 +383,77 @@
    "bids": 6,
    "current_bid": 7.5,
    "saved_at": "2026-11-25T00:50:31.497Z"
+  },
+  "v1|800949710085|0": {
+   "id": "v1|800949710085|0",
+   "title": "Mimikyu #245/236 - 2019 Pokemon Sun & Moon Cosmic Eclipse - NM + !!",
+   "url": "https://www.ebay.com/itm/800949710085",
+   "image": "https://i.ebayimg.com/images/g/zN8AAeSwVsBrAmWX/s-l1600.jpg",
+   "price": 33,
+   "shipping": 5,
+   "ship_known": true,
+   "total": 38,
+   "card": "Mimikyu",
+   "set": "SM - Cosmic Eclipse",
+   "year": 2019,
+   "era": "classic",
+   "tags": [],
+   "number": "245/236",
+   "variant": "holofoil",
+   "market": 70.52,
+   "multiplier": 1,
+   "mult_note": null,
+   "pid": 201356,
+   "listed": "2026-11-22T03:48:41.000Z",
+   "needs_detail": false,
+   "cond_sources": {
+    "field": [
+     "nm",
+     "near mint"
+    ],
+    "title": [
+     "nm",
+     "nm"
+    ],
+    "desc": [
+     "nm",
+     "nm"
+    ]
+   },
+   "condition": "nm",
+   "condition_label": "Near Mint",
+   "condition_source": "field",
+   "expected": 70.52,
+   "price_pct": 53.9,
+   "gap": 32.52,
+   "confidence": 100,
+   "score": 32.52,
+   "reasons": [
+    "eBay condition field says \"near mint\" (Near Mint)",
+    "Title says \"nm\" (Near Mint)",
+    "Description says \"nm\" (Near Mint)",
+    "The eBay field, title and description all agree"
+   ],
+   "warnings": [
+    {
+     "level": "warn",
+     "text": "Seller does not accept returns"
+    }
+   ],
+   "tcg_url": "https://www.tcgplayer.com/product/201356",
+   "seller": {
+    "name": "bengerstrading",
+    "pct": 99.7,
+    "score": 692
+   },
+   "first_seen": "2026-11-25T00:49:49Z",
+   "last_seen": "2026-11-25T00:49:49Z",
+   "detailed": true,
+   "checked_at": "2026-11-25T00:50:28Z",
+   "end_time": "2026-11-25T03:48:41.000Z",
+   "bids": 15,
+   "current_bid": 33,
+   "saved_at": "2026-11-25T00:52:36.870Z"
   }
  }
 }
