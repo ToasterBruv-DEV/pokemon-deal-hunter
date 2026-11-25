@@ -321,6 +321,68 @@
    "is_new": true,
    "new_listing": true,
    "saved_at": "2026-11-24T01:22:39.459Z"
+  },
+  "v1|377654703924|0": {
+   "id": "v1|377654703924|0",
+   "title": "2006 Pokemon Pop Series 3 3/17 Jolteon",
+   "url": "https://www.ebay.com/itm/377654703924",
+   "image": "https://i.ebayimg.com/images/g/X7UAAeSwS~Nq~N14/s-l1600.jpg",
+   "price": 7.5,
+   "shipping": 8,
+   "ship_known": true,
+   "total": 15.5,
+   "card": "Jolteon",
+   "set": "POP Series 3",
+   "year": 2026,
+   "era": "modern",
+   "tags": [],
+   "number": "3/17",
+   "variant": "holofoil",
+   "market": 42.56,
+   "multiplier": 0.783,
+   "mult_note": "blended with 300 modern eBay listings in this condition",
+   "pid": 86342,
+   "listed": "2026-11-18T04:50:01.000Z",
+   "needs_detail": false,
+   "cond_sources": {
+    "field": [
+     "lp",
+     "lightly played"
+    ]
+   },
+   "condition": "lp",
+   "condition_label": "Lightly Played",
+   "condition_source": "field",
+   "expected": 33.32,
+   "price_pct": 46.5,
+   "gap": 17.82,
+   "confidence": 80,
+   "score": 14.26,
+   "reasons": [
+    "eBay condition field says \"lightly played\" (Lightly Played)",
+    "Only one source states the condition",
+    "Lightly Played is capped at 80 because wear varies between copies"
+   ],
+   "warnings": [
+    {
+     "level": "warn",
+     "text": "Seller does not accept returns"
+    }
+   ],
+   "tcg_url": "https://www.tcgplayer.com/product/86342",
+   "seller": {
+    "name": "probstein123",
+    "pct": 99.6,
+    "score": 1754124
+   },
+   "first_seen": "2026-11-25T00:45:09Z",
+   "last_seen": "2026-11-25T00:45:09Z",
+   "detailed": true,
+   "checked_at": "2026-11-25T00:45:43Z",
+   "end_time": "2026-11-25T04:50:01.000Z",
+   "bids": 6,
+   "current_bid": 7.5,
+   "saved_at": "2026-11-25T00:50:31.497Z"
   }
  }
 }
